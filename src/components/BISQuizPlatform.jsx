@@ -1,638 +1,525 @@
-import React, { useState, useEffect, useReducer, useCallback, useMemo, useRef } from 'react';
-import { w3cwebsocket as W3CWebSocket } from 'websocket';
-import { AlertCircle, Trophy, Clock, Star, Award, TrendingUp, Users, Brain } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Award, CheckCircle2, XCircle, Trophy, RefreshCcw, Timer, Star, ArrowRight, Zap, Heart, Medal, Book } from 'lucide-react';
 
-// Enhanced State Management with more features
-const initialState = {
-  user: null,
-  quiz: {
-    currentQuestion: null,
-    questions: [],
-    score: 0,
-    streak: 0,
-    timeRemaining: 30,
-    category: null,
-    difficulty: 'medium',
-    powerUps: {
-      timeFreeze: 2,
-      fiftyFifty: 2,
-      skipQuestion: 1
+const UserManager = {
+  saveUserProgress(username, quizData) {
+    const users = JSON.parse(localStorage.getItem('bisQuizUsers') || '[]');
+    const existingUserIndex = users.findIndex(u => u.username === username);
+
+    const quizResult = {
+      category: quizData.category,
+      score: quizData.score,
+      totalQuestions: quizData.totalQuestions,
+      timestamp: new Date().toISOString()
+    };
+
+    if (existingUserIndex !== -1) {
+      // Update existing user
+      users[existingUserIndex].quizHistory = users[existingUserIndex].quizHistory || [];
+      users[existingUserIndex].quizHistory.push(quizResult);
+      users[existingUserIndex].totalPoints = 
+        (users[existingUserIndex].totalPoints || 0) + quizData.score;
+    } else {
+      // Create new user
+      users.push({
+        username,
+        quizHistory: [quizResult],
+        totalPoints: quizData.score,
+        profilePicture: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`
+      });
     }
+
+    localStorage.setItem('bisQuizUsers', JSON.stringify(users));
   },
-  leaderboard: {
-    daily: [],
-    weekly: [],
-    allTime: []
-  },
-  realTimeEvents: [],
-  achievements: {
-    unlocked: [],
-    progress: {},
-    recentUnlock: null
-  },
-  gameMode: 'casual', // casual, ranked, tournament
-  socialFeatures: {
-    onlinePlayers: [],
-    challenges: [],
-    friends: []
-  },
-  statistics: {
-    questionsAnswered: 0,
-    correctAnswers: 0,
-    averageTime: 0,
-    categoryPerformance: {},
-    dailyStreak: 0
+
+  getLeaderboard() {
+    const users = JSON.parse(localStorage.getItem('bisQuizUsers') || '[]');
+    return users
+      .sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0))
+      .slice(0, 10);
   }
 };
 
-// Enhanced Reducer with More Actions
-function gameReducer(state, action) {
-  switch (action.type) {
-    case 'SET_USER':
-      return { ...state, user: action.payload };
-    case 'UPDATE_QUIZ_STATE':
-      return { 
-        ...state, 
-        quiz: { ...state.quiz, ...action.payload } 
-      };
-    case 'UPDATE_LEADERBOARD':
-      return { 
-        ...state, 
-        leaderboard: { 
-          ...state.leaderboard, 
-          [action.board]: action.payload 
-        } 
-      };
-    case 'ADD_REAL_TIME_EVENT':
-      return { 
-        ...state, 
-        realTimeEvents: [
-          ...state.realTimeEvents.slice(-15), 
-          { ...action.payload, timestamp: new Date().toISOString() }
-        ]
-      };
-    case 'UNLOCK_ACHIEVEMENT':
-      return {
-        ...state,
-        achievements: {
-          ...state.achievements,
-          unlocked: [...state.achievements.unlocked, action.payload],
-          recentUnlock: action.payload,
-          progress: {
-            ...state.achievements.progress,
-            [action.payload.id]: 100
-          }
-        }
-      };
-    case 'UPDATE_STATISTICS':
-      return {
-        ...state,
-        statistics: {
-          ...state.statistics,
-          ...action.payload
-        }
-      };
-    case 'USE_POWER_UP':
-      return {
-        ...state,
-        quiz: {
-          ...state.quiz,
-          powerUps: {
-            ...state.quiz.powerUps,
-            [action.powerUp]: state.quiz.powerUps[action.powerUp] - 1
-          }
-        }
-      };
-    case 'SET_GAME_MODE':
-      return { ...state, gameMode: action.payload };
-    case 'UPDATE_SOCIAL_FEATURES':
-      return {
-        ...state,
-        socialFeatures: {
-          ...state.socialFeatures,
-          ...action.payload
-        }
-      };
-    default:
-      return state;
-  }
-}
+const BISQuizPlatform = () => {
+  const [currentCategory, setCurrentCategory] = useState(null);
+  const [currentQuestion, setCurrentQuestion] = useState(0);
+  const [score, setScore] = useState(0);
+  const [showScore, setShowScore] = useState(false);
+  const [selectedAnswer, setSelectedAnswer] = useState(null);
+  const [timer, setTimer] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [animate, setAnimate] = useState(false);
+  const [lifelines, setLifelines] = useState(2);
+  const [showHint, setShowHint] = useState(false);
+  const [achievements, setAchievements] = useState([]);
+  const [confetti, setConfetti] = useState(false);
+  const [shake, setShake] = useState(false);
+  const [username, setUsername] = useState('');
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [leaderboard, setLeaderboard] = useState([]);
 
-const BISQuizMaster = () => {
-  const [state, dispatch] = useReducer(gameReducer, initialState);
-  const [webSocket, setWebSocket] = useState(null);
-  const [showAchievement, setShowAchievement] = useState(false);
-  const [answerSubmitted, setAnswerSubmitted] = useState(false);
-  const timerRef = useRef(null);
-  const answerTimeRef = useRef(null);
+  const renderUserRegistration = () => (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white p-8 rounded-2xl shadow-lg max-w-md w-full">
+        <h2 className="text-2xl font-bold mb-6 text-center">
+          Enter Your Username
+        </h2>
+        <input 
+          type="text"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="Choose a username"
+          className="w-full p-3 border rounded-xl mb-4 focus:ring-2 focus:ring-blue-500"
+        />
+        <button 
+          onClick={() => username.trim() && setCurrentCategory(null)}
+          className="w-full bg-gradient-to-r from-blue-500 to-purple-500 text-white p-3 rounded-xl"
+        >
+          Start Quiz Journey
+        </button>
+      </div>
+    </div>
+  );
 
-  // Enhanced WebSocket Connection
-  useEffect(() => {
-    const client = new W3CWebSocket('ws://your-websocket-server.com/quiz');
-    
-    const reconnectWebSocket = () => {
-      setTimeout(() => {
-        console.log('Attempting to reconnect...');
-        setWebSocket(new W3CWebSocket('ws://your-websocket-server.com/quiz'));
-      }, 3000);
-    };
-
-    client.onopen = () => {
-      console.log('WebSocket Connected');
-      dispatch({
-        type: 'ADD_REAL_TIME_EVENT',
-        payload: {
-          type: 'system',
-          message: 'Connected to Quiz Arena',
-          icon: 'connection'
-        }
-      });
-    };
-
-    client.onclose = () => {
-      console.log('WebSocket Disconnected');
-      reconnectWebSocket();
-    };
-
-    client.onerror = (error) => {
-      console.error('WebSocket Error:', error);
-      client.close();
-    };
-
-    client.onmessage = (message) => {
-      const data = JSON.parse(message.data);
-      
-      switch (data.type) {
-        case 'LEADERBOARD_UPDATE':
-          dispatch({ 
-            type: 'UPDATE_LEADERBOARD',
-            board: data.board,
-            payload: data.leaderboard 
-          });
-          break;
-        case 'NEW_QUESTION':
-          setAnswerSubmitted(false);
-          dispatch({
-            type: 'UPDATE_QUIZ_STATE',
-            payload: { 
-              currentQuestion: data.question,
-              timeRemaining: 30
-            }
-          });
-          startQuestionTimer();
-          break;
-        case 'GLOBAL_EVENT':
-          dispatch({
-            type: 'ADD_REAL_TIME_EVENT',
-            payload: data.event
-          });
-          break;
-        case 'PLAYER_JOIN':
-          dispatch({
-            type: 'UPDATE_SOCIAL_FEATURES',
-            payload: {
-              onlinePlayers: data.onlinePlayers
-            }
-          });
-          break;
-        case 'CHALLENGE_RECEIVED':
-          handleChallengeReceived(data.challenge);
-          break;
-      }
-    };
-
-    setWebSocket(client);
-
-    return () => {
-      client.close();
-    };
-  }, []);
-
-  // Enhanced Timer Management
-  const startQuestionTimer = useCallback(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    answerTimeRef.current = Date.now();
-
-    timerRef.current = setInterval(() => {
-      dispatch({
-        type: 'UPDATE_QUIZ_STATE',
-        payload: { 
-          timeRemaining: Math.max(0, state.quiz.timeRemaining - 1) 
-        }
-      });
-
-      if (state.quiz.timeRemaining <= 0) {
-        clearInterval(timerRef.current);
-        if (!answerSubmitted) {
-          handleTimeUp();
-        }
-      }
-    }, 1000);
-  }, [state.quiz.timeRemaining, answerSubmitted]);
-
-  // Enhanced Profile Management
-  const createProfile = useCallback((username) => {
-    const newUser = {
-      id: `user_${Date.now()}`,
-      username,
-      profileLevel: 1,
-      totalXP: 0,
-      specialization: null,
-      badges: [],
-      preferences: {
-        theme: 'default',
-        soundEffects: true,
-        notifications: true
-      }
-    };
-
-    dispatch({ type: 'SET_USER', payload: newUser });
-    
-    webSocket?.send(JSON.stringify({
-      type: 'USER_REGISTER',
-      user: newUser
-    }));
-  }, [webSocket]);
-
-  // Enhanced Quiz Mechanics
-  const startQuiz = useCallback(() => {
-    webSocket?.send(JSON.stringify({
-      type: 'START_QUIZ',
-      userId: state.user?.id,
-      gameMode: state.gameMode,
-      difficulty: state.quiz.difficulty
-    }));
-  }, [webSocket, state.user, state.gameMode, state.quiz.difficulty]);
-
-  const submitAnswer = useCallback((selectedOption) => {
-    if (answerSubmitted) return;
-    
-    setAnswerSubmitted(true);
-    clearInterval(timerRef.current);
-    
-    const answerTime = (Date.now() - answerTimeRef.current) / 1000;
-    
-    webSocket?.send(JSON.stringify({
-      type: 'ANSWER_SUBMIT',
-      userId: state.user?.id,
-      questionId: state.quiz.currentQuestion.id,
-      selectedOption,
-      timeSpent: answerTime,
-      gameMode: state.gameMode
-    }));
-
-    // Update statistics
-    dispatch({
-      type: 'UPDATE_STATISTICS',
-      payload: {
-        questionsAnswered: state.statistics.questionsAnswered + 1,
-        averageTime: (state.statistics.averageTime * state.statistics.questionsAnswered + answerTime) / 
-          (state.statistics.questionsAnswered + 1)
-      }
-    });
-  }, [webSocket, state.user, state.quiz.currentQuestion, state.gameMode, state.statistics, answerSubmitted]);
-
-  // Power-Ups System
-  const usePowerUp = useCallback((powerUpType) => {
-    if (state.quiz.powerUps[powerUpType] > 0) {
-      dispatch({ type: 'USE_POWER_UP', powerUp: powerUpType });
-      
-      switch (powerUpType) {
-        case 'timeFreeze':
-          clearInterval(timerRef.current);
-          setTimeout(startQuestionTimer, 5000);
-          break;
-        case 'fiftyFifty':
-          // Implementation for removing two wrong answers
-          break;
-        case 'skipQuestion':
-          webSocket?.send(JSON.stringify({
-            type: 'SKIP_QUESTION',
-            userId: state.user?.id
-          }));
-          break;
-      }
-    }
-  }, [state.quiz.powerUps, startQuestionTimer]);
-
-  // Enhanced Achievement System
-  const checkAchievements = useCallback(() => {
-    const achievements = {
-      'QUIZ_MASTER': {
-        id: 'QUIZ_MASTER',
-        condition: state.quiz.streak >= 10,
-        title: 'Quiz Master',
-        description: 'Maintain a streak of 10 correct answers'
-      },
-      'KNOWLEDGE_SEEKER': {
-        id: 'KNOWLEDGE_SEEKER',
-        condition: state.quiz.score >= 500,
-        title: 'Knowledge Seeker',
-        description: 'Earn 500 points in total'
-      },
-      'SPEED_DEMON': {
-        id: 'SPEED_DEMON',
-        condition: state.statistics.averageTime < 5 && state.statistics.questionsAnswered > 10,
-        title: 'Speed Demon',
-        description: 'Average answer time under 5 seconds'
-      }
-    };
-
-    Object.values(achievements).forEach((achievement) => {
-      if (achievement.condition && !state.achievements.unlocked.includes(achievement.id)) {
-        dispatch({ type: 'UNLOCK_ACHIEVEMENT', payload: achievement });
-        setShowAchievement(true);
-        setTimeout(() => setShowAchievement(false), 3000);
-      }
-    });
-  }, [state.quiz.streak, state.quiz.score, state.statistics, state.achievements.unlocked]);
-
-  // Social Features
-  const handleChallengeReceived = useCallback((challenge) => {
-    dispatch({
-      type: 'ADD_REAL_TIME_EVENT',
-      payload: {
-        type: 'challenge',
-        message: `${challenge.from} has challenged you to a quiz duel!`,
-        action: () => acceptChallenge(challenge.id)
-      }
-    });
-  }, []);
-
-  const acceptChallenge = useCallback((challengeId) => {
-    webSocket?.send(JSON.stringify({
-      type: 'ACCEPT_CHALLENGE',
-      userId: state.user?.id,
-      challengeId
-    }));
-  }, [webSocket, state.user]);
-
-  // Enhanced UI Components
-  const renderQuizInterface = () => (
-    <div className="rounded-lg bg-white p-6 shadow-lg">
-      <div className="flex justify-between items-center mb-4">
-        <div className="flex items-center space-x-2">
-          <Clock className="w-6 h-6" />
-          <span className="text-xl font-bold">{state.quiz.timeRemaining}s</span>
-        </div>
-        <div className="flex space-x-4">
-          {Object.entries(state.quiz.powerUps).map(([powerUp, count]) => (
-            <button
-              key={powerUp}
-              onClick={() => usePowerUp(powerUp)}
-              disabled={count === 0}
-              className={`px-3 py-1 rounded ${count > 0 ? 'bg-blue-500 text-white' : 'bg-gray-300'}`}
+  // New: Leaderboard Modal
+  const renderLeaderboard = () => (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white p-8 rounded-2xl shadow-lg max-w-md w-full">
+        <h2 className="text-2xl font-bold mb-6 flex justify-between items-center">
+          Global Leaderboard
+          <button 
+            onClick={() => setShowLeaderboard(false)}
+            className="text-gray-500 hover:text-gray-700"
+          >
+            Close
+          </button>
+        </h2>
+        <div className="space-y-4">
+          {leaderboard.map((user, index) => (
+            <div 
+              key={user.username} 
+              className="flex items-center justify-between p-3 bg-gray-50 rounded-xl"
             >
-              {powerUp}: {count}
-            </button>
+              <div className="flex items-center space-x-4">
+                <img 
+                  src={user.profilePicture} 
+                  alt={user.username} 
+                  className="w-10 h-10 rounded-full"
+                />
+                <span>{user.username}</span>
+              </div>
+              <span className="font-bold">{user.totalPoints} pts</span>
+            </div>
           ))}
         </div>
       </div>
-
-      {state.quiz.currentQuestion ? (
-        <div className="space-y-4">
-          <h2 className="text-xl font-bold">{state.quiz.currentQuestion.text}</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {state.quiz.currentQuestion.options.map((option, index) => (
-              <button 
-                key={index} 
-                onClick={() => submitAnswer(option)}
-                disabled={answerSubmitted}
-                className={`p-4 rounded-lg border-2 transition-all
-                  ${answerSubmitted 
-                    ? option === state.quiz.currentQuestion.correct
-                      ? 'bg-green-100 border-green-500'
-                      : 'bg-red-100 border-red-500'
-                    : 'hover:bg-blue-50 border-gray-200'
-                  }`}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div className="text-center">
-          <button 
-            onClick={startQuiz}
-            className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600"
-          >
-            Begin Quiz Challenge
-          </button>
-        </div>
-      )}
     </div>
   );
 
-  const renderLeaderboard = () => (
-    <div className="bg-white rounded-lg p-6 shadow-lg">
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="text-xl font-bold">Leaderboard</h3>
-        <div className="flex space-x-2">
-          <button 
-            onClick={() => dispatch({ type: 'SET_GAME_MODE', payload: 'casual' })}
-            className={`px-3 py-1 rounded ${state.gameMode === 'casual' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
-          >
-            Casual
-          </button>
-          <button 
-            onClick={() => dispatch({ type: 'SET_GAME_MODE', payload: 'ranked' })}
-            className={`px-3 py-1 rounded ${state.gameMode === 'ranked' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
-          >
-            Ranked
-          </button>
-          <button 
-            onClick={() => dispatch({ type: 'SET_GAME_MODE', payload: 'tournament' })}
-            className={`px-3 py-1 rounded ${state.gameMode === 'tournament' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
-          >
-            Tournament
-          </button>
-        </div>
-      </div>
-      
-      <div className="space-y-4">
-        {Object.entries(state.leaderboard).map(([board, leaders]) => (
-          <div key={board} className="border rounded-lg p-4">
-            <h4 className="font-semibold mb-2 capitalize">{board} Rankings</h4>
-            {leaders.slice(0, 5).map((user, index) => (
-              <div 
-                key={user.id} 
-                className="flex items-center justify-between py-2 border-b last:border-0"
-              >
-                <div className="flex items-center space-x-3">
-                  <span className={`w-6 h-6 flex items-center justify-center rounded-full
-                    ${index === 0 ? 'bg-yellow-100 text-yellow-700' :
-                      index === 1 ? 'bg-gray-100 text-gray-700' :
-                      index === 2 ? 'bg-orange-100 text-orange-700' : 'bg-blue-50 text-blue-700'
-                    }`}
-                  >
-                    {index + 1}
-                  </span>
-                  <span>{user.username}</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <Trophy className="w-4 h-4" />
-                  <span>{user.score}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  const quizData = {
+    standards: {
+      title: "Standards & Quality Control",
+      icon: "🏆",
+      description: "Master the fundamentals of quality standards",
+      questions: [
+        {
+          question: "What does ISI stand for?",
+          options: [
+            "Indian Standards Institute",
+            "International Standards Index",
+            "Indian Statistical Institute",
+            "Indian Standards Institution"
+          ],
+          correct: 3,
+          explanation: "ISI stands for Indian Standards Institution, established to harmonize national standards."
+        },
+        {
+          question: "Which of these products must mandatorily have BIS certification?",
+          options: [
+            "Gold Jewelry",
+            "Packaged Drinking Water",
+            "Steel Products",
+            "All of the above"
+          ],
+          correct: 3,
+          explanation: "These products require mandatory BIS certification for consumer safety."
+        },
+        {
+          question: "What is the validity period of a BIS license?",
+          options: [
+            "1 year",
+            "2 years",
+            "3 years",
+            "5 years"
+          ],
+          correct: 0,
+          explanation: "BIS licenses are valid for 1 year and need annual renewal."
+        }
+      ]
+    },
+    awareness: {
+      title: "Consumer Awareness",
+      icon: "👥",
+      description: "Learn to identify authentic certifications",
+      questions: [
+        {
+          question: "How can you verify a genuine BIS certification?",
+          options: [
+            "Check BIS website",
+            "Look for hologram",
+            "Scan QR code",
+            "All of the above"
+          ],
+          correct: 3,
+          explanation: "Multiple verification methods ensure authenticity of BIS certifications."
+        },
+        {
+          question: "Which of these is a sign of fake BIS certification?",
+          options: [
+            "Missing hologram",
+            "Incorrect license number format",
+            "Poor print quality",
+            "All of the above"
+          ],
+          correct: 3,
+          explanation: "Being aware of these signs helps identify counterfeit certifications."
+        }
+      ]
+    },
+    funFacts: {
+      title: "Fun Facts about BIS",
+      icon: "💡",
+      description: "Discover interesting facts about BIS history",
+      questions: [
+        {
+          question: "When was BIS established?",
+          options: [
+            "1947",
+            "1986",
+            "1952",
+            "1991"
+          ],
+          correct: 1,
+          explanation: "BIS was established in 1986, replacing the ISI."
+        },
+        {
+          question: "Which was the first product to receive ISI certification?",
+          options: [
+            "Cement",
+            "Steel",
+            "Biscuits",
+            "Soap"
+          ],
+          correct: 0,
+          explanation: "Cement was the first product to receive ISI certification."
+        }
+      ]
+    }
+  };
 
-  const renderProfile = () => (
-    <div className="bg-white rounded-lg p-6 shadow-lg">
-      {!state.user ? (
-        <div className="space-y-4">
-          <h3 className="text-xl font-bold">Create Your Profile</h3>
-          <input 
-            type="text" 
-            placeholder="Choose Your Expert Username"
-            className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && e.target.value.trim()) {
-                createProfile(e.target.value.trim());
-              }
-            }}
-          />
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <div className="flex justify-between items-center">
-            <h2 className="text-xl font-bold">{state.user.username}</h2>
-            <div className="flex items-center space-x-2">
-              <Star className="w-5 h-5 text-yellow-500" />
-              <span>Level {state.user.profileLevel}</span>
-            </div>
-          </div>
-          
-          <div className="grid grid-cols-2 gap-4">
-            <div className="p-3 bg-blue-50 rounded-lg">
-              <div className="text-sm text-blue-600">Total XP</div>
-              <div className="text-xl font-bold">{state.user.totalXP}</div>
-            </div>
-            <div className="p-3 bg-green-50 rounded-lg">
-              <div className="text-sm text-green-600">Daily Streak</div>
-              <div className="text-xl font-bold">{state.statistics.dailyStreak} days</div>
-            </div>
-          </div>
+  useEffect(() => {
+    let interval;
+    if (currentCategory && !showScore) {
+      interval = setInterval(() => {
+        setTimer(prev => prev + 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [currentCategory, showScore]);
 
-          <div className="border-t pt-4">
-            <h4 className="font-semibold mb-2">Achievements</h4>
-            <div className="grid grid-cols-2 gap-2">
-              {state.achievements.unlocked.map((achievement) => (
-                <div 
-                  key={achievement.id}
-                  className="flex items-center space-x-2 p-2 bg-yellow-50 rounded-lg"
-                >
-                  <Award className="w-4 h-4 text-yellow-600" />
-                  <span className="text-sm">{achievement.title}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+  const handleCategorySelect = (category) => {
+    setCurrentCategory(category);
+    setCurrentQuestion(0);
+    setScore(0);
+    setShowScore(false);
+    setSelectedAnswer(null);
+    setTimer(0);
+    setStreak(0);
+    setLifelines(2);
+    setShowHint(false);
+    setAchievements([]);
+  };
 
-          <div className="border-t pt-4">
-            <h4 className="font-semibold mb-2">Statistics</h4>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <div className="text-sm text-gray-600">Questions Answered</div>
-                <div className="font-bold">{state.statistics.questionsAnswered}</div>
-              </div>
-              <div>
-                <div className="text-sm text-gray-600">Avg. Response Time</div>
-                <div className="font-bold">{state.statistics.averageTime.toFixed(1)}s</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  const useLifeline = () => {
+    if (lifelines > 0) {
+      setLifelines(prev => prev - 1);
+      setShowHint(true);
+      // Add achievement for using lifeline
+      addAchievement('Lifeline Used! 🆘');
+    }
+  };
 
-  const renderRealTimeEvents = () => (
-    <div className="bg-white rounded-lg p-6 shadow-lg">
-      <h3 className="text-xl font-bold mb-4">Live Feed</h3>
-      <div className="space-y-2 max-h-60 overflow-y-auto">
-        {state.realTimeEvents.map((event, index) => (
-          <div 
-            key={index} 
-            className="flex items-center space-x-2 p-2 rounded-lg hover:bg-gray-50"
-          >
-            {event.type === 'system' && <AlertCircle className="w-4 h-4 text-blue-500" />}
-            {event.type === 'achievement' && <Award className="w-4 h-4 text-yellow-500" />}
-            {event.type === 'challenge' && <Users className="w-4 h-4 text-green-500" />}
-            <div className="flex-1">
-              <p className="text-sm">{event.message}</p>
-              {event.action && (
-                <button 
-                  onClick={event.action}
-                  className="text-xs text-blue-500 hover:text-blue-600"
-                >
-                  Accept Challenge
-                </button>
-              )}
-            </div>
-            <span className="text-xs text-gray-500">
-              {new Date(event.timestamp).toLocaleTimeString()}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  const addAchievement = (achievement) => {
+    setAchievements(prev => [...prev, achievement]);
+    setConfetti(true);
+    setTimeout(() => setConfetti(false), 2000);
+  };
 
-  // Achievement Popup
-  const renderAchievementPopup = () => (
-    state.achievements.recentUnlock && showAchievement && (
-      <div className="fixed top-4 right-4 bg-yellow-100 border-2 border-yellow-500 p-4 rounded-lg shadow-lg animate-slide-in">
-        <div className="flex items-center space-x-3">
-          <Award className="w-8 h-8 text-yellow-600" />
-          <div>
-            <h4 className="font-bold">{state.achievements.recentUnlock.title}</h4>
-            <p className="text-sm text-yellow-700">{state.achievements.recentUnlock.description}</p>
-          </div>
-        </div>
-      </div>
-    )
-  );
-
-  // Handle time up
-  const handleTimeUp = useCallback(() => {
-    webSocket?.send(JSON.stringify({
-      type: 'TIME_UP',
-      userId: state.user?.id,
-      questionId: state.quiz.currentQuestion?.id
-    }));
+  const handleAnswerSelect = (answerIndex) => {
+    setSelectedAnswer(answerIndex);
+    const correct = answerIndex === quizData[currentCategory].questions[currentQuestion].correct;
     
-    dispatch({
-      type: 'UPDATE_STATISTICS',
-      payload: {
-        questionsAnswered: state.statistics.questionsAnswered + 1
-      }
-    });
-  }, [webSocket, state.user, state.quiz.currentQuestion, state.statistics.questionsAnswered]);
+    if (correct) {
+      setScore(score + 1);
+      setStreak(streak + 1);
+      setAnimate(true);
+      
+      // Achievement system
+      if (streak === 3) addAchievement('Hot Streak! 🔥');
+      if (score === quizData[currentCategory].questions.length - 1) addAchievement('Perfect Score! 🌟');
+    } else {
+      setStreak(0);
+      setShake(true);
+      setTimeout(() => setShake(false), 500);
+    }
 
-  // Main render
-  return (
-    <div className="min-h-screen bg-gray-100 p-6">
-      <div className="max-w-6xl mx-auto">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-6">
-            {renderQuizInterface()}
-            {renderRealTimeEvents()}
+    setTimeout(() => {
+      if (currentQuestion < quizData[currentCategory].questions.length - 1) {
+        setCurrentQuestion(currentQuestion + 1);
+        setSelectedAnswer(null);
+        setAnimate(false);
+        setShowHint(false);
+      } else {
+        setShowScore(true);
+      }
+    }, 1500);
+  };
+
+  const resetQuiz = () => {
+    setCurrentCategory(null);
+    setCurrentQuestion(0);
+    setScore(0);
+    setShowScore(false);
+    setSelectedAnswer(null);
+    setTimer(0);
+    setStreak(0);
+  };
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const renderCategorySelection = () => {
+    if (!username) {
+      return renderUserRegistration();
+    }
+
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {Object.keys(quizData).map((category) => (
+          <div
+            key={category}
+            className="group bg-white p-6 rounded-2xl shadow-lg hover:shadow-2xl transform hover:-translate-y-2 transition-all duration-300 cursor-pointer backdrop-blur-lg bg-opacity-90 hover:bg-gradient-to-br hover:from-blue-50 hover:to-purple-50"
+            onClick={() => {
+              handleCategorySelect(category);
+              // Optional: Load user's previous performance in this category
+            }}
+          >
+            {/* Existing category rendering */}
+            <div className="flex items-center justify-between mt-4">
+              <span className="text-sm text-gray-500">{quizData[category].questions.length} questions</span>
+              <ArrowRight className="text-blue-500 transform group-hover:translate-x-2 transition-transform duration-300" size={20} />
+            </div>
           </div>
-          <div className="space-y-6">
-            {renderProfile()}
-            {renderLeaderboard()}
+        ))}
+      </div>
+    );
+  };
+
+  const renderQuestion = () => {
+    const currentQuizData = quizData[currentCategory];
+    const question = currentQuizData.questions[currentQuestion];
+
+    return (
+      <div className={`bg-white p-8 rounded-2xl shadow-lg backdrop-blur-lg bg-opacity-90 transition-all duration-300 ${shake ? 'animate-shake' : ''}`}>
+        {/* Status Bar */}
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center">
+              <Timer className="text-blue-500 mr-2 animate-pulse" size={20} />
+              <span className="text-gray-600">{formatTime(timer)}</span>
+            </div>
+            <div className="flex items-center">
+              <Star className="text-yellow-500 mr-2" size={20} />
+              <span className="text-gray-600">Streak: {streak}</span>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2">
+            {[...Array(lifelines)].map((_, i) => (
+              <Heart key={i} className="text-red-500 hover:scale-110 transition-transform cursor-pointer" size={20} onClick={useLifeline} />
+            ))}
           </div>
         </div>
+
+        {/* Progress Bar */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold mb-2 flex items-center">
+            Question {currentQuestion + 1}
+            <span className="text-sm text-gray-500 ml-2">of {currentQuizData.questions.length}</span>
+          </h2>
+          <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+            <div 
+              className="bg-gradient-to-r from-blue-500 to-purple-500 h-2 transition-all duration-500 ease-out"
+              style={{ width: `${((currentQuestion + 1) / currentQuizData.questions.length) * 100}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Question */}
+        <p className="text-xl mb-8 font-medium">{question.question}</p>
+
+        {/* Options */}
+        <div className="space-y-4">
+          {question.options.map((option, index) => (
+            <button
+              key={index}
+              className={`w-full p-4 text-left rounded-xl transition-all duration-300 border-2 transform hover:scale-102 ${
+                selectedAnswer === null
+                  ? 'hover:border-blue-500 hover:shadow-md hover:bg-blue-50'
+                  : selectedAnswer === index
+                  ? index === question.correct
+                    ? 'border-green-500 bg-green-50 scale-105'
+                    : 'border-red-500 bg-red-50'
+                  : index === question.correct
+                  ? 'border-green-500 bg-green-50'
+                  : 'border-gray-200'
+              }`}
+              onClick={() => selectedAnswer === null && handleAnswerSelect(index)}
+              disabled={selectedAnswer !== null}
+            >
+              <div className="flex items-center justify-between">
+                <span>{option}</span>
+                {selectedAnswer !== null && index === question.correct && (
+                  <CheckCircle2 className="text-green-500 animate-bounce" size={20} />
+                )}
+                {selectedAnswer === index && index !== question.correct && (
+                  <XCircle className="text-red-500 animate-shake" size={20} />
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {/* Hint */}
+        {showHint && (
+          <div className="mt-4 p-4 bg-yellow-50 rounded-xl border-2 border-yellow-200 animate-fadeIn">
+            <p className="text-yellow-800 flex items-center">
+              <Zap className="mr-2" size={20} />
+              {question.hint}
+            </p>
+          </div>
+        )}
+
+        {/* Explanation */}
+        {selectedAnswer !== null && (
+          <div className="mt-6 p-4 bg-gray-50 rounded-xl animate-slideUp">
+            <p className="text-gray-700">{question.explanation}</p>
+          </div>
+        )}
+
+        {/* Achievements */}
+        <div className="fixed top-4 right-4 space-y-2">
+          {achievements.map((achievement, index) => (
+            <div
+              key={index}
+              className="bg-white p-2 rounded-lg shadow-lg animate-slideInRight flex items-center space-x-2"
+            >
+              <Medal className="text-yellow-500" size={16} />
+              <span>{achievement}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Confetti Effect */}
+        {confetti && (
+          <div className="fixed inset-0 pointer-events-none">
+            {[...Array(50)].map((_, i) => (
+              <div
+                key={i}
+                className="absolute animate-confetti"
+                style={{
+                  left: `${Math.random() * 100}%`,
+                  top: `-10px`,
+                  backgroundColor: ['#FFD700', '#FF6B6B', '#4CAF50', '#2196F3'][Math.floor(Math.random() * 4)],
+                  width: '10px',
+                  height: '10px',
+                  borderRadius: '50%',
+                  animationDelay: `${Math.random() * 2}s`,
+                }}
+              />
+            ))}
+          </div>
+        )}
       </div>
-      {renderAchievementPopup()}
+    );
+  };
+  const renderScore = () => {
+    const totalQuestions = quizData[currentCategory].questions.length;
+    const percentage = (score / totalQuestions) * 100;
+    
+    // Save user progress
+    UserManager.saveUserProgress(username, {
+      category: currentCategory,
+      score,
+      totalQuestions
+    });
+
+    // Refresh leaderboard
+    setLeaderboard(UserManager.getLeaderboard());
+
+    return (
+      <div className="bg-white p-8 rounded-2xl shadow-lg text-center backdrop-blur-lg bg-opacity-90 animate-scaleIn">
+        {/* Existing score rendering */}
+        
+        {/* New Leaderboard Button */}
+        <button
+          onClick={() => setShowLeaderboard(true)}
+          className="mt-4 bg-gray-100 text-gray-700 px-6 py-2 rounded-xl hover:bg-gray-200 flex items-center mx-auto"
+        >
+          <Globe className="mr-2" size={20} />
+          View Leaderboard
+        </button>
+      </div>
+    );
+  };
+
+  // Modify category selection to require username
+ 
+
+  // Add Leaderboard Button to Main Component
+  return (
+    <div className="max-w-4xl mx-auto p-6 relative">
+      <h1 className="text-4xl font-bold text-center mb-4 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent animate-gradient">
+        BIS Interactive Quiz
+      </h1>
+      <p className="text-center text-gray-600 mb-12">
+        Test your knowledge about Bureau of Indian Standards
+      </p>
+      
+      {/* Leaderboard Button */}
+      {username && (
+        <button 
+          onClick={() => {
+            setLeaderboard(UserManager.getLeaderboard());
+            setShowLeaderboard(true);
+          }}
+          className="absolute top-6 right-6 bg-gray-100 p-2 rounded-full hover:bg-gray-200"
+        >
+          <Globe className="text-blue-500" size={24} />
+        </button>
+      )}
+
+      <div className={`transition-all duration-500 ${animate ? 'transform scale-105' : ''}`}>
+        {!currentCategory && renderCategorySelection()}
+        {currentCategory && !showScore && renderQuestion()}
+        {showScore && renderScore()}
+      </div>
+
+      {/* Leaderboard Modal */}
+      {showLeaderboard && renderLeaderboard()}
     </div>
   );
 };
-
-export default BISQuizMaster;
+export default BISQuizPlatform;
